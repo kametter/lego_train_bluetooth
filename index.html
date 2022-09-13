@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+    <script>
+        // 全体的にGoogle Chromeで動けばいいというコード
+
+        let devices = {};
+
+        // LEGO パワーアップハブ(88009)のUUID
+        const LEGO_POWERED_UP_HUB_SERVICE_UUID = '00001623-1212-efde-1623-785feabcd123';
+        const LEGO_POWERED_UP_HUB_CHARACTERISTIC_UUID = '00001624-1212-efde-1623-785feabcd123';
+        // 各ポートのコマンド番号
+        const LEGO_POWERED_UP_HUB_PORT_CODES = { A: 0x00, B: 0x01 };
+
+        // パワーアップハブにbluethooth接続
+        const connectPowerdUpHub = async () => {
+            try {
+                const available = await isEnableBluetooth();
+                if (!available) {
+                    alert('Bluetooth未対応ブラウザです。');
+                    return;
+                }
+                const device = await navigator.bluetooth.requestDevice({
+                    filters: [
+                        {
+                            services: [LEGO_POWERED_UP_HUB_SERVICE_UUID]
+                        }
+                    ],
+                    optionalServices: [0x657]
+                });
+                deviceRow(device);
+                const server = await device.gatt.connect();
+                const service = await server.getPrimaryService(LEGO_POWERED_UP_HUB_SERVICE_UUID);
+                const characteristic = await service.getCharacteristic(LEGO_POWERED_UP_HUB_CHARACTERISTIC_UUID);
+
+                devices[device.id] = {
+                    device: device,
+                    server: server,
+                    characteristic: characteristic
+                };
+            } catch (e) {
+                // もう少しいいハンドリング方法はないか？
+                if (e.message === 'User cancelled the requestDevice() chooser.') {
+                    alert('Bluetooth接続をキャンセルしました。');
+                } else {
+                    console.log(e.message, e);
+                }
+            }
+        }
+
+        const isEnableBluetooth = async () => {
+            if (!navigator.bluetooth) {
+                return false;
+            }
+            return await navigator.bluetooth.getAvailability();
+        }
+
+        // 接続したハブの情報を含む行を追加
+        const deviceRow = (device) => {
+            const devicesArea = document.getElementById('devices_area');
+            let trainRow = document.getElementById('train_row_template').content.cloneNode(true);
+            trainRow.querySelector('tr').setAttribute('target_device_id', device.id);
+            trainRow.querySelector('.train_name').textContent = device.name;
+            trainRow.querySelector('.train_id').textContent = device.id;
+            trainRow.querySelector('.speed_up').addEventListener('click', { handleEvent: changeSpeed, trainRow: trainRow, deviceId: device.id, changeValue: 10 });
+            trainRow.querySelector('.stop').addEventListener('click', { handleEvent: changeSpeed, trainRow: trainRow, deviceId: device.id, changeValue: 0 });
+            trainRow.querySelector('.speed_down').addEventListener('click', { handleEvent: changeSpeed, trainRow: trainRow, deviceId: device.id, changeValue: -10 });
+            trainRow.querySelector('.disconnect').addEventListener('click', { handleEvent: trainDisconnect, trainRow: trainRow, deviceId: device.id });
+            devicesArea.appendChild(trainRow);
+        }
+
+        // 速度取得
+        const getCurrentSpeed = (port) => {
+            return parseInt(port.querySelector('.current_speed').textContent);
+        }
+
+        // 速度設定
+        const setCurrentSpeed = (port, currentSpeed) => {
+            port.querySelector('.current_speed').textContent = currentSpeed;
+        }
+
+        // 電車の速度変更
+        const changeSpeed = (e) => {
+            const port = e.currentTarget.closest('.speed_info');
+            const portType = port.getAttribute('data-port');
+            const deviceId = this.trainRow.getAttribute('target_device_id');
+
+            const device = devices[deviceId];
+            if (!device) {
+                return;
+            }
+
+            let currentSpeed = getCurrentSpeed(port);
+            if (this.changeValue === 0) {
+                currentSpeed = 0;
+            } else {
+                currentSpeed += this.changeValue;
+                if (currentSpeed > 100) {
+                    currentSpeed = 100;
+                }
+                if (currentSpeed < -100) {
+                    currentSpeed = -100;
+                }
+            }
+            setCurrentSpeed(port, currentSpeed);
+            device.characteristic.then((characteristic) => {
+                characteristic.writeValue(new Uint8Array([0x08, 0x00, 0x81, LEGO_POWERED_UP_HUB_PORT_CODES[portType], 0x11, 0x51, 0x00, toUnsignedHex(spcurrentSpeedeed)]));
+            });
+        }
+
+        // 速度がマイナスの場合、符号なし2バイト16進数にするための処理
+        const toUnsignedHex = dec => {
+            if (dec >= 0) {
+                return dec;
+            } else {
+                return 256 + dec;
+            }
+        }
+
+        // 接続解除
+        const trainDisconnect = (e) => {
+            const device = devices[this.deviceId];
+            if (!device) {
+                return;
+            }
+
+            device.server.disconnect();
+            this.trainRow.remove();
+        }
+    </script>
+</head>
+
+<body>
+    <button type="button" onclick="connectPowerdUpHub()">接続</button>
+
+    <table>
+        <thead>
+            <tr>
+                <th>電車情報</th>
+                <th>ポートA</th>
+                <th>ポートB</th>
+                <th>接続</th>
+            </tr>
+        </thead>
+        <tbody id="devices_area">
+        </tbody>
+    </table>
+
+    <template id="train_row_template">
+        <tr class="train_row" target_device_id="">
+            <td class="train_info">
+                <ul>
+                    <li class="train_name"></li>
+                    <li class="train_id"></li>
+                </ul>
+            </td>
+            <td class="speed_info" data-port="A">
+                <div>
+                    現在のスピード: <span class="current_speed">0</span>
+                </div>
+                <div>
+                    <button type="button" class="speed_down">ー</button>
+                    <button type="button" class="stop">■</button>
+                    <button type="button" class="speed_up">＋</button>
+                </div>
+            </td>
+            <td class="speed_info" data-port="B">
+                <div>
+                    現在のスピード: <span class="current_speed">0</span>
+                </div>
+                <div>
+                    <button type="button" class="speed_down">ー</button>
+                    <button type="button" class="stop">■</button>
+                    <button type="button" class="speed_up">＋</button>
+                </div>
+            </td>
+            <td class="disconnect">
+                <button type="buttn" class="discoonect">接続解除</button>
+            </td>
+        </tr>
+    </template>
+</body>
+
+</html>

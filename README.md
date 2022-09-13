@@ -1,0 +1,2 @@
+# lego_train_bluetooth
+LEGOの電車にbluetoothで接続するテスト

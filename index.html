@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>LEGOトレイン接続</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.0.2/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-EVSTQN3/azprG1Anm3QDgpJLIm9Nao0Yz1ztcQTwFspd3yD65VohhpuuCOmLASjC" crossorigin="anonymous" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.2.1/css/all.min.css" integrity="sha512-MV7K8+y+gLIBoVD59lQIYicR65iaqukzvf/nwasF0nqhPay5w/9lJmVM2hMDcnK1OnMGCdVK+iQrJ7lzPJQd1w==" crossorigin="anonymous" referrerpolicy="no-referrer" />
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.0.2/dist/js/bootstrap.bundle.min.js" integrity="sha384-MrcW6ZMFYlzcLA8Nl+NtUVF0sA7MsXsP1UyJoMp4YLEuNSfAP+JcXn/tWtIaxVXM" crossorigin="anonymous"></script>
+    <script>
+      // 全体的にGoogle Chromeで動けばいいというコード
+      const devices = {};
+
+      // LEGO パワーアップハブ(88009)のUUID
+      const LEGO_POWERED_UP_HUB_SERVICE_UUID = '00001623-1212-efde-1623-785feabcd123';
+      const LEGO_POWERED_UP_HUB_CHARACTERISTIC_UUID = '00001624-1212-efde-1623-785feabcd123';
+      // 各ポートのコマンド番号
+      const LEGO_POWERED_UP_HUB_PORT_CODES = { A: 0x00, B: 0x01 };
+
+      // パワーアップハブにbluethooth接続
+      const connectPowerdUpHub = async () => {
+        try {
+          const available = await isEnableBluetooth();
+          if (!available) {
+            alert('Bluetooth未対応ブラウザです。');
+            return;
+          }
+          const device = await navigator.bluetooth.requestDevice({
+            filters: [
+              {
+                services: [LEGO_POWERED_UP_HUB_SERVICE_UUID],
+              },
+            ],
+            optionalServices: [0x657],
+          });
+          deviceRow(device);
+          const server = await device.gatt.connect();
+          const service = await server.getPrimaryService(LEGO_POWERED_UP_HUB_SERVICE_UUID);
+          const characteristic = await service.getCharacteristic(LEGO_POWERED_UP_HUB_CHARACTERISTIC_UUID);
+
+          devices[device.id] = {
+            device: device,
+            server: server,
+            characteristic: characteristic,
+          };
+        } catch (e) {
+          // もう少しいいハンドリング方法はないか？
+          if (e.message === 'User cancelled the requestDevice() chooser.') {
+            alert('Bluetooth接続をキャンセルしました。');
+          } else {
+            console.log(e.message, e);
+          }
+        }
+      };
+
+      const isEnableBluetooth = async () => {
+        if (!navigator.bluetooth) {
+          return false;
+        }
+        return await navigator.bluetooth.getAvailability();
+      };
+
+      // 接続したハブの情報を含む行を追加
+      const deviceRow = (device) => {
+        const devicesArea = document.getElementById('devices_area');
+        const trainRow = document.getElementById('train_row_template').content.cloneNode(true);
+        trainRow.querySelector('.train_row').setAttribute('target_device_id', device.id);
+        trainRow.querySelector('.train_name').textContent = device.name;
+        trainRow.querySelector('.train_id').textContent = device.id;
+        trainRow.querySelectorAll('.input_speed').forEach((element) => {
+          element.addEventListener('input', changeSpeed);
+        });
+        trainRow.querySelector('.disconnect').addEventListener('click', trainDisconnect);
+        trainRow.querySelector('.dropdown-toggle').setAttribute('id', device.id);
+        trainRow.querySelector('.dropdown-toggle').addEventListener('change', changeColor)
+        trainRow.querySelector('.dropdown-menu').setAttribute('aria-labelledby', device.id);
+        trainRow.querySelectorAll('.dropdown-item').forEach((element) => {
+          element.addEventListener('click', changeColor);
+        })
+        devicesArea.appendChild(trainRow);
+      };
+
+      // 速度設定
+      const setCurrentSpeed = (port, currentSpeed) => {
+        port.querySelector('.current_speed').textContent = currentSpeed;
+      };
+
+      // 電車の速度変更
+      const changeSpeed = (e) => {
+        const port = e.currentTarget.closest('.speed_info');
+        const portType = port.getAttribute('data-port');
+        const deviceId = e.currentTarget.closest('.train_row').getAttribute('target_device_id');
+
+        const device = devices[deviceId];
+        if (!device) {
+          return;
+        }
+
+        let currentSpeed = parseInt(e.currentTarget.value);
+        if (currentSpeed > 100) {
+          currentSpeed = 100;
+        }
+        if (currentSpeed < -100) {
+          currentSpeed = -100;
+        }
+        setCurrentSpeed(port, currentSpeed);
+        device.characteristic.writeValue(new Uint8Array([0x08, 0x00, 0x81, LEGO_POWERED_UP_HUB_PORT_CODES[portType], 0x11, 0x51, 0x00, toUnsignedHex(currentSpeed)]));
+      };
+
+      const changeColor = (e) => {
+        const deviceId = e.currentTarget.closest('.train_row').getAttribute('target_device_id');
+        const device = devices[deviceId];
+        if (!device) {
+          return;
+        }
+
+        const color = e.currentTarget.getAttribute('data-color');
+        const toggleButton = e.currentTarget.closest('.dropdown').querySelector('.dropdown-toggle');
+        toggleButton.style.backgroundColor = e.currentTarget.getAttribute('data-bgcolor');
+        toggleButton.style.color = e.currentTarget.getAttribute('data-fontcolor');
+        device.characteristic.writeValue(new Uint8Array([0x08, 0x00, 0x81, 0x32, 0x11, 0x51, 0x00, color]));
+      };
+
+      // 速度がマイナスの場合、符号なし2バイト16進数にするための処理
+      const toUnsignedHex = (dec) => {
+        if (dec >= 0) {
+          return dec;
+        } else {
+          return 256 + dec;
+        }
+      };
+
+      // 接続解除
+      const trainDisconnect = (e) => {
+        const trainRow = e.currentTarget.closest('.train_row');
+        const device = devices[trainRow.getAttribute('target_device_id')];
+        if (!device) {
+          return;
+        }
+
+        device.server.disconnect();
+        trainRow.remove();
+      };
+    </script>
+  </head>
+
+  <body>
+    <div class="container">
+      <div class="row mt-4">
+        <div class="col-12 text-center">
+          <button type="button" class="btn btn-primary" onclick="connectPowerdUpHub()">トレイン追加</button>
+        </div>
+      </div>
+      <div id="devices_area" class="ms-2 me-2 mt-4"></div>
+
+      <div class="mt-4 text-center">
+        <a class="btn btn-link" href="https://github.com/kametter/lego_train_bluetooth/blob/main/README.md" target="_blank">使い方</a>
+      </div>
+    </div>
+
+    <template id="train_row_template">
+      <div class="card train_row mb-4" target_device_id="">
+        <div class="card-body">
+          <i class="fas fa-times pull-right float-end disconnect"></i>
+          <h5 class="card-title train_name"></h5>
+          <h6 class="card-subtitle text-muted train_id"></h6>
+          <div class="row mt-2">
+            <div class="col-12">
+              <div class="dropdown">
+                <button type="button" class="btn btn-light dropdown-toggle w-100" data-bs-toggle="dropdown" aria-expanded="false">色</button>
+                <ul class="dropdown-menu text-center w-100">
+                  <li style="background-color: black;"><a class="dropdown-item" style="color: white;" data-color="0" data-bgcolor="black" data-fontcolor="white">黒</a></li>
+                  <li style="background-color: pink;"><a class="dropdown-item" data-color="1" data-bgcolor="pink" data-fontcolor="black">ピンク</a></li>
+                  <li style="background-color: purple;"><a class="dropdown-item" style="color: white;" data-color="2" data-bgcolor="purple" data-fontcolor="white">紫</a></li>
+                  <li style="background-color: blue;"><a class="dropdown-item" style="color: white;" data-color="3" data-bgcolor="blue" data-fontcolor="white">青</a></li>
+                  <li style="background-color: lightblue;"><a class="dropdown-item" data-color="4" data-bgcolor="lightblue" data-fontcolor="black">水色</a></li>
+                  <li style="background-color: cyan;"><a class="dropdown-item" data-color="5" data-bgcolor="cyan" data-fontcolor="black">シアン</a></li>
+                  <li style="background-color: green;"><a class="dropdown-item" style="color: white;" data-color="6" data-bgcolor="green" data-fontcolor="white">緑</a></li>
+                  <li style="background-color: yellow;"><a class="dropdown-item" data-color="7" data-bgcolor="yellow" data-fontcolor="black">黄色</a></li>
+                  <li style="background-color: orange;"><a class="dropdown-item" data-color="8" data-bgcolor="orange" data-fontcolor="black">オレンジ</a></li>
+                  <li style="background-color: red;"><a class="dropdown-item" style="color: white;" data-color="9" data-bgcolor="red" data-fontcolor="white">赤</a></li>
+                  <li style="background-color: white;"><a class="dropdown-item" data-color="10" data-bgcolor="white" data-fontcolor="black">白</a></li>
+                </ul>
+              </div>
+            </div>
+            <div class="col-6 speed_info" data-port="A">
+              <div>現在のスピード: <span class="current_speed">0</span></div>
+              <div>
+                <input type="range" class="form-range input_speed" value="0" min="-100" max="100" step="10" />
+              </div>
+            </div>
+            <div class="col-6 speed_info" data-port="B">
+              <div>現在のスピード: <span class="current_speed">0</span></div>
+              <div>
+                <input type="range" class="form-range input_speed" value="0" min="-100" max="100" step="10" />
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </template>
+  </body>
+</html>
